@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { asioClass, BUFFER_SIZES, roundTripMs, SAMPLE_RATES } from "@/lib/steel/asio";
+import { BUFFER_SIZES, SAMPLE_RATES } from "@/lib/steel/asio";
+import { modeledBufferLatencyMs } from "@/lib/steel/metrics";
 import { measuredLatencyMs, panic, playNote, pushParams, toggleKernel } from "@/lib/steel/engine";
 import { t } from "@/lib/i18n";
 import { enableMidi, KEY_LABEL, selectMidiIn } from "@/lib/steel/midi";
@@ -16,8 +17,8 @@ const HIGH = 72;
 
 export function SteelConsole() {
   const s = useSteel();
-  const rtl = roundTripMs(s.buffer, s.sampleRate);
-  const measured = s.armed ? measuredLatencyMs() : null;
+  const modeledLatency = modeledBufferLatencyMs(s.buffer, s.sampleRate);
+  const browserLatency = s.armed ? measuredLatencyMs() : null;
   const transOn = Boolean(s.addons.transient) && versionGte(s.kernel, "3.5.0");
 
   useEffect(() => {
@@ -54,7 +55,6 @@ export function SteelConsole() {
 
   const peakDb = s.peak > 0 ? (20 * Math.log10(s.peak)).toFixed(1) : "-∞";
   const clip = s.peak > 0.95;
-  const klass = asioClass(rtl);
 
   return (
     <div className="grid gap-8 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)]">
@@ -87,15 +87,19 @@ export function SteelConsole() {
         <div className="mt-8 grid grid-cols-2 gap-3 sm:grid-cols-4">
           <Stat label="Buffer" value={`${s.buffer}`} unit="samples" />
           <Stat label="Rate" value={`${s.sampleRate / 1000}`} unit="kHz" />
-          <Stat label="ASIO RTL" value={rtl.toFixed(1)} unit="ms" />
           <Stat
-            label="Measured"
-            value={measured != null ? measured.toFixed(1) : "—"}
-            unit="ms"
+            label="Modeled buffer latency"
+            value={modeledLatency.value != null ? modeledLatency.value.toFixed(1) : "—"}
+            unit="ms · model"
+          />
+          <Stat
+            label="Browser API latency"
+            value={browserLatency != null ? browserLatency.toFixed(1) : "—"}
+            unit="ms · browser-reported"
           />
         </div>
         <p className="mt-2 font-mono text-2xs text-faint">
-          Class {klass} · extra buffers 2 (ASIO4ALL model)
+          Model: 2 buffers · not an ASIO driver measurement
         </p>
 
         <div className="mt-6 grid gap-4 sm:grid-cols-2">
@@ -129,7 +133,7 @@ export function SteelConsole() {
           </label>
         </div>
         <p className="mt-2 text-xs text-muted">
-          Re-arm after changing rate. Buffer size here is the host ASIO figure; the worklet quantum stays 128.
+          Re-arm after changing rate. This buffer value is a model input; the browser AudioWorklet quantum remains 128.
         </p>
 
         <div className="mt-8">
@@ -152,7 +156,7 @@ export function SteelConsole() {
             </p>
             <p className="font-mono text-2xs text-muted">dBFS</p>
             <p className="mt-3 font-mono text-2xs text-muted">
-              Voices {s.voices} · load {s.cpu.toFixed(0)}%
+              Voices {s.voices} · CPU load unavailable
             </p>
           </div>
         </div>
