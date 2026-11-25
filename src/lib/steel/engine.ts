@@ -1,6 +1,7 @@
 import { useSteel } from "./store";
 import { policyFor, probeSignal } from "@/lib/signal/probe";
 import { requestWithTimeoutAndLateCleanup } from "./media-permission";
+import { createSerialLifecycleQueue } from "./lifecycle-queue";
 
 type WorkletHandle = {
   ctx: AudioContext;
@@ -112,16 +113,7 @@ async function tryMic(ctx: AudioContext, node: AudioWorkletNode) {
   }
 }
 
-let lifecycleQueue: Promise<void> = Promise.resolve();
-
-function enqueueLifecycle<T>(operation: () => Promise<T>): Promise<T> {
-  const task = lifecycleQueue.then(operation, operation);
-  lifecycleQueue = task.then(
-    () => undefined,
-    () => undefined,
-  );
-  return task;
-}
+const enqueueLifecycle = createSerialLifecycleQueue();
 
 async function armKernelInternal() {
   const { sampleRate, kernel, webOut, patch } = useSteel.getState();
