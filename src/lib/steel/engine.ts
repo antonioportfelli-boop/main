@@ -140,7 +140,7 @@ export async function armKernel() {
       peak: data.peak ?? 0,
       rms: data.rms ?? 0,
       voices: data.voices ?? 0,
-      cpu: Math.min(100, (data.peak ?? 0) * 40 + (data.voices ?? 0) * 3),
+      // CPU utilization is not exposed by this browser audio path.
     });
   };
 
@@ -179,7 +179,6 @@ export async function disarmKernel() {
     peak: 0,
     rms: 0,
     voices: 0,
-    cpu: 0,
     inputLive: false,
   });
 }
@@ -194,7 +193,7 @@ export function tapSteelMaster(): { ctx: AudioContext; master: GainNode } | null
   return { ctx: handle.ctx, master: handle.master };
 }
 
-export function measuredLatencyMs() {
+export function browserReportedLatencyMs() {
   if (!handle) return null;
   const { ctx } = handle;
   const base = ctx.baseLatency || 0;
