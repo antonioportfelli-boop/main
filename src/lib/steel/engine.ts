@@ -243,7 +243,17 @@ export function tapSteelMaster(): { ctx: AudioContext; master: GainNode } | null
 export function browserReportedLatencyMs() {
   if (!handle) return null;
   const { ctx } = handle;
-  const base = ctx.baseLatency || 0;
-  const out = ctx.outputLatency || 0;
+  const base = ctx.baseLatency;
+  const out = ctx.outputLatency;
+  if (
+    typeof base !== "number" ||
+    !Number.isFinite(base) ||
+    base < 0 ||
+    typeof out !== "number" ||
+    !Number.isFinite(out) ||
+    out < 0
+  ) {
+    return null;
+  }
   return (base + out) * 1000;
 }
