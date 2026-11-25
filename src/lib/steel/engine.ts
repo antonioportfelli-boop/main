@@ -125,7 +125,7 @@ function enqueueLifecycle<T>(operation: () => Promise<T>): Promise<T> {
 
 async function armKernelInternal() {
   const { sampleRate, kernel, webOut, patch } = useSteel.getState();
-  if (handle) await disarmKernelInternal();
+  if (handle) return;
 
   let ctx: AudioContext | null = null;
   let node: AudioWorkletNode | null = null;
