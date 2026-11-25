@@ -1,5 +1,6 @@
 import { useSteel } from "./store";
 import { policyFor, probeSignal } from "@/lib/signal/probe";
+import { requestWithTimeoutAndLateCleanup } from "./media-permission";
 
 type WorkletHandle = {
   ctx: AudioContext;
@@ -90,19 +91,19 @@ export function setWebTap(on: boolean) {
 async function tryMic(ctx: AudioContext, node: AudioWorkletNode) {
   if (!navigator.mediaDevices?.getUserMedia) return { mic: null, stream: null };
   try {
-    const stream = await Promise.race([
-      navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: false,
-          noiseSuppression: false,
-          autoGainControl: false,
-          channelCount: 1,
-        },
-      }),
-      new Promise<never>((_, reject) => {
-        setTimeout(() => reject(new Error("mic-timeout")), 900);
-      }),
-    ]);
+    const stream = await requestWithTimeoutAndLateCleanup(
+      () =>
+        navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: false,
+            noiseSuppression: false,
+            autoGainControl: false,
+            channelCount: 1,
+          },
+        }),
+      (lateStream) => lateStream.getTracks().forEach((track) => track.stop()),
+      900,
+    );
     const mic = ctx.createMediaStreamSource(stream);
     mic.connect(node);
     return { mic, stream };
