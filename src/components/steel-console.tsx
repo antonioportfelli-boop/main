@@ -3,7 +3,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { BUFFER_SIZES, SAMPLE_RATES } from "@/lib/steel/asio";
 import { modeledBufferLatencyMs } from "@/lib/steel/metrics";
-import { measuredLatencyMs, panic, playNote, pushParams, toggleKernel } from "@/lib/steel/engine";
+import { browserReportedLatencyMs, panic, playNote, pushParams, toggleKernel } from "@/lib/steel/engine";
 import { t } from "@/lib/i18n";
 import { enableMidi, KEY_LABEL, selectMidiIn } from "@/lib/steel/midi";
 import { useSteel } from "@/lib/steel/store";
@@ -18,7 +18,7 @@ const HIGH = 72;
 export function SteelConsole() {
   const s = useSteel();
   const modeledLatency = modeledBufferLatencyMs(s.buffer, s.sampleRate);
-  const browserLatency = s.armed ? measuredLatencyMs() : null;
+  const browserLatency = s.armed ? browserReportedLatencyMs() : null;
   const transOn = Boolean(s.addons.transient) && versionGte(s.kernel, "3.5.0");
 
   useEffect(() => {
