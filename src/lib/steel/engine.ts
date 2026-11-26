@@ -1,5 +1,7 @@
 import { useSteel } from "./store";
 import { policyFor, probeSignal } from "@/lib/signal/probe";
+import { requestWithTimeoutAndLateCleanup } from "./media-permission";
+import { createSerialLifecycleQueue } from "./lifecycle-queue";
 
 type WorkletHandle = {
   ctx: AudioContext;
@@ -90,19 +92,19 @@ export function setWebTap(on: boolean) {
 async function tryMic(ctx: AudioContext, node: AudioWorkletNode) {
   if (!navigator.mediaDevices?.getUserMedia) return { mic: null, stream: null };
   try {
-    const stream = await Promise.race([
-      navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: false,
-          noiseSuppression: false,
-          autoGainControl: false,
-          channelCount: 1,
-        },
-      }),
-      new Promise<never>((_, reject) => {
-        setTimeout(() => reject(new Error("mic-timeout")), 900);
-      }),
-    ]);
+    const stream = await requestWithTimeoutAndLateCleanup(
+      () =>
+        navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: false,
+            noiseSuppression: false,
+            autoGainControl: false,
+            channelCount: 1,
+          },
+        }),
+      (lateStream) => lateStream.getTracks().forEach((track) => track.stop()),
+      900,
+    );
     const mic = ctx.createMediaStreamSource(stream);
     mic.connect(node);
     return { mic, stream };
@@ -111,82 +113,118 @@ async function tryMic(ctx: AudioContext, node: AudioWorkletNode) {
   }
 }
 
-export async function armKernel() {
+const enqueueLifecycle = createSerialLifecycleQueue();
+
+async function armKernelInternal() {
   const { sampleRate, kernel, webOut, patch } = useSteel.getState();
-  if (handle) await disarmKernel();
+  if (handle) return;
 
-  const hint = policyFor(probeSignal().path).latencyHint;
-  const ctx = new AudioContext({
-    sampleRate,
-    latencyHint: hint,
-  });
-  await ctx.audioWorklet.addModule(`/worklets/steel-kernel.js?k=${encodeURIComponent(kernel)}`);
-  const node = new AudioWorkletNode(ctx, "steel-kernel", {
-    numberOfInputs: 1,
-    numberOfOutputs: 1,
-    outputChannelCount: [2],
-  });
-  const master = ctx.createGain();
-  master.gain.value = 1;
-  const dest = ctx.createMediaStreamDestination();
-  node.connect(master);
-  master.connect(ctx.destination);
-  if (webOut) master.connect(dest);
+  let ctx: AudioContext | null = null;
+  let node: AudioWorkletNode | null = null;
+  let master: GainNode | null = null;
+  let dest: MediaStreamAudioDestinationNode | null = null;
+  let mic: MediaStreamAudioSourceNode | null = null;
+  let stream: MediaStream | null = null;
 
-  node.port.onmessage = (ev: MessageEvent) => {
-    const data = ev.data as { type?: string; peak?: number; rms?: number; voices?: number };
-    if (data?.type !== "meter") return;
-    useSteel.getState().patch({
-      peak: data.peak ?? 0,
-      rms: data.rms ?? 0,
-      voices: data.voices ?? 0,
-      cpu: Math.min(100, (data.peak ?? 0) * 40 + (data.voices ?? 0) * 3),
+  try {
+    const hint = policyFor(probeSignal().path).latencyHint;
+    ctx = new AudioContext({ sampleRate, latencyHint: hint });
+    await ctx.audioWorklet.addModule(
+      `/worklets/steel-kernel.js?k=${encodeURIComponent(kernel)}`,
+    );
+    node = new AudioWorkletNode(ctx, "steel-kernel", {
+      numberOfInputs: 1,
+      numberOfOutputs: 1,
+      outputChannelCount: [2],
     });
-  };
+    master = ctx.createGain();
+    master.gain.value = 1;
+    dest = ctx.createMediaStreamDestination();
+    node.connect(master);
+    master.connect(ctx.destination);
+    if (webOut) master.connect(dest);
 
-  const { mic, stream } = await tryMic(ctx, node);
+    node.port.onmessage = (ev: MessageEvent) => {
+      const data = ev.data as { type?: string; peak?: number; rms?: number; voices?: number };
+      if (data?.type !== "meter") return;
+      useSteel.getState().patch({
+        peak: data.peak ?? 0,
+        rms: data.rms ?? 0,
+        voices: data.voices ?? 0,
+      });
+    };
 
-  handle = { ctx, node, master, dest, mic, stream, destOn: webOut };
-  node.port.postMessage({ type: "params", params: currentParams() });
-  await ctx.resume();
-  patch({
-    armed: true,
-    running: ctx.state === "running",
-    error: null,
-    inputLive: Boolean(stream),
-  });
+    const micResult = await tryMic(ctx, node);
+    mic = micResult.mic;
+    stream = micResult.stream;
+
+    node.port.postMessage({ type: "params", params: currentParams() });
+    await ctx.resume();
+
+    handle = { ctx, node, master, dest, mic, stream, destOn: webOut };
+    patch({
+      armed: true,
+      running: ctx.state === "running",
+      error: null,
+      inputLive: Boolean(stream),
+    });
+  } catch (error) {
+    // Each cleanup is isolated so one teardown failure cannot skip the rest.
+    try { if (node) node.port.onmessage = null; } catch { /* best effort */ }
+    try { node?.disconnect(); } catch { /* best effort */ }
+    try { master?.disconnect(); } catch { /* best effort */ }
+    try { mic?.disconnect(); } catch { /* best effort */ }
+    try { stream?.getTracks().forEach((track) => track.stop()); } catch { /* best effort */ }
+    try { if (ctx && ctx.state !== "closed") await ctx.close(); } catch { /* best effort */ }
+    handle = null;
+    useSteel.getState().patch({
+      armed: false,
+      running: false,
+      inputLive: false,
+      error: error instanceof Error ? error.message : "Audio engine startup failed.",
+    });
+    throw error;
+  }
 }
 
-export async function disarmKernel() {
-  if (!handle) {
+async function disarmKernelInternal() {
+  const active = handle;
+  handle = null;
+  if (!active) {
     useSteel.getState().patch({ armed: false, running: false, inputLive: false });
     return;
   }
-  try {
-    handle.node.port.onmessage = null;
-    handle.node.disconnect();
-    handle.master.disconnect();
-    handle.mic?.disconnect();
-    handle.stream?.getTracks().forEach((t) => t.stop());
-    await handle.ctx.close();
-  } catch {
-    /* already closed */
-  }
-  handle = null;
+
+  try { active.node.port.onmessage = null; } catch { /* best effort */ }
+  try { active.node.disconnect(); } catch { /* best effort */ }
+  try { active.master.disconnect(); } catch { /* best effort */ }
+  try { active.mic?.disconnect(); } catch { /* best effort */ }
+  try { active.stream?.getTracks().forEach((track) => track.stop()); } catch { /* best effort */ }
+  try { if (active.ctx.state !== "closed") await active.ctx.close(); } catch { /* best effort */ }
+
   useSteel.getState().patch({
     armed: false,
     running: false,
     peak: 0,
     rms: 0,
     voices: 0,
-    cpu: 0,
     inputLive: false,
   });
 }
 
-export async function toggleKernel() {
-  if (useSteel.getState().armed) await disarmKernel();
-  else await armKernel();
+export function armKernel() {
+  return enqueueLifecycle(armKernelInternal);
+}
+
+export function disarmKernel() {
+  return enqueueLifecycle(disarmKernelInternal);
+}
+
+export function toggleKernel() {
+  return enqueueLifecycle(async () => {
+    if (useSteel.getState().armed || handle) await disarmKernelInternal();
+    else await armKernelInternal();
+  });
 }
 
 export function tapSteelMaster(): { ctx: AudioContext; master: GainNode } | null {
@@ -194,10 +232,20 @@ export function tapSteelMaster(): { ctx: AudioContext; master: GainNode } | null
   return { ctx: handle.ctx, master: handle.master };
 }
 
-export function measuredLatencyMs() {
+export function browserReportedLatencyMs() {
   if (!handle) return null;
   const { ctx } = handle;
-  const base = ctx.baseLatency || 0;
-  const out = ctx.outputLatency || 0;
+  const base = ctx.baseLatency;
+  const out = ctx.outputLatency;
+  if (
+    typeof base !== "number" ||
+    !Number.isFinite(base) ||
+    base < 0 ||
+    typeof out !== "number" ||
+    !Number.isFinite(out) ||
+    out < 0
+  ) {
+    return null;
+  }
   return (base + out) * 1000;
 }

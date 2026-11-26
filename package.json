@@ -19,7 +19,7 @@
     "preview:stop": "node scripts/preview.mjs stop",
     "typecheck": "tsc --noEmit",
     "check:auth": "node scripts/check-auth-invariant.mjs",
-    "test": "node --test 'scripts/**/*.test.mjs' && node --experimental-strip-types --test src/lib/app-data/app-data.test.ts src/lib/auth/gate-identity.test.ts src/lib/auth/sign-in-gate.test.ts src/lib/preview-host-bridge.test.ts",
+    "test": "node --test 'scripts/**/*.test.mjs' && node --experimental-strip-types --test src/lib/app-data/app-data.test.ts src/lib/auth/gate-identity.test.ts src/lib/auth/sign-in-gate.test.ts src/lib/preview-host-bridge.test.ts src/lib/steel/metrics.test.ts src/lib/steel/media-permission.test.ts src/lib/steel/lifecycle-queue.test.ts",
     "test:coverage": "c8 --reporter=text --reporter=lcov npm test",
     "lint": "eslint .",
     "format": "prettier --write ."
